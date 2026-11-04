@@ -1,0 +1,67 @@
+name: Build and test
+
+on:
+  push:
+    branches: [ "main", "claude/**" ]
+    tags: [ 'v*.*.*' ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push makes an older run pointless (and its .hh3 commit would be rejected anyway).
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Rules, save format, and a bot that plays full seasons (PC only, SDK headers only).
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: classpaddev/hollyhock-3
+          path: hollyhock-3
+      - run: make -C test test SDK_DIR=$GITHUB_WORKSPACE/hollyhock-3/sdk
+      - run: make -C test shots SDK_DIR=$GITHUB_WORKSPACE/hollyhock-3/sdk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PocketGridiron-screenshots
+          path: test/out/*.png
+
+  # The calculator build: PocketGridiron.hh3. On a push the result is committed back to the
+  # branch, so the .hh3 can always be downloaded straight from the repository.
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    container:
+      image: ghcr.io/classpaddev/hollyhock-3:v2.2.2
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.github_token }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: make -j && make fpucheck
+      - run: ls -l PocketGridiron.hh3 && sh4a_nofpueb-elf-size PocketGridiron.elf || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PocketGridiron.hh3
+          path: PocketGridiron.hh3
+      - name: Commit PocketGridiron.hh3 to the branch
+        if: github.event_name == 'push' && github.ref_type == 'branch'
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f PocketGridiron.hh3
+          if git diff --cached --quiet; then
+            echo "PocketGridiron.hh3 is unchanged"
+          else
+            # plain sh in this container: no ${VAR::7}
+            git commit -m "Build PocketGridiron.hh3 from $(echo "$GITHUB_SHA" | cut -c1-7) [skip ci]"
+            git push origin "HEAD:$GITHUB_REF_NAME" || echo "the branch moved on; the run for the newer commit will commit the .hh3"
+          fi
