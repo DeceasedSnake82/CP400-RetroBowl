@@ -30,13 +30,16 @@ bool settingsOk(const Settings& s) {
 
 bool seasonOk(const pg::Season& s) {
     if (s.team >= pg::NTEAMS || s.stage > pg::SS_OUT || s.week > pg::NWEEKS) return false;
+    // team indices used for TEAMS[] lookups (next playoff opponent, last game, other semi-final)
+    if (s.playoffOpp >= pg::NTEAMS || s.lastOpp >= pg::NTEAMS || s.otherSemi >= pg::NTEAMS || s.lastStage > pg::SS_OUT) return false;
     for (int i = 0; i < pg::U_COUNT; ++i)
         if (s.level[i] < 1 || s.level[i] > pg::MAX_LEVEL) return false;
     return true;
 }
 
 bool matchOk(const pg::Match& m) {
-    return m.user < pg::NTEAMS && m.opp < pg::NTEAMS && m.next <= pg::NX_FINAL && m.playoff <= 1 && m.endPending <= 1;
+    return m.user < pg::NTEAMS && m.opp < pg::NTEAMS && m.next <= pg::NX_FINAL && m.playoff <= 1 && m.endPending <= 1 &&
+           m.quarter >= 1 && m.down <= 4 && m.otPoss <= 2;
 }
 }  // namespace
 

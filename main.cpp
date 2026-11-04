@@ -74,6 +74,7 @@ char msg[48];
 int msgTimer;
 
 int pickSel;                               // team picker cursor
+bool pickTapped;                           // a card was tapped once (a second tap starts)
 MState ms;
 bool paused;
 Play play;                                 // the live play (or the pre-snap preview)
@@ -417,8 +418,8 @@ void drawHub() {
         gfx::textCentered(393, 190, "PLAY ON FOR ANOTHER SEASON", 1, C_DIM);
     }
 
-    const char* play = opp < 0 ? "NEXT SEASON" : data.inMatch ? "RESUME" : "PLAY";
-    render::drawButton(10, 240, 170, BTN_H, play, 2, C_GREEN);
+    const char* playLabel = opp < 0 ? "NEXT SEASON" : data.inMatch ? "RESUME" : "PLAY";
+    render::drawButton(10, 240, 170, BTN_H, playLabel, 2, C_GREEN);
     render::drawButton(188, 240, 110, BTN_H, "TEAM", 2, C_BLUE);
     render::drawButton(306, 240, 110, BTN_H, "TABLE", 2, C_PURPLE);
     render::drawButton(424, 240, 94, BTN_H, "MENU", 2, C_GREY);
@@ -679,7 +680,8 @@ const char* lastText(const Match& m) {
     if (m.last.result == RES_INT) return "INTERCEPTION";
     if (m.last.result == RES_SAFETY) return "SAFETY - FREE KICK";
     if (m.last.turnover) return "TURNOVER ON DOWNS";
-    if (m.passAtt + m.rushYds == 0 && m.score[0] == 0) return "OPENING KICKOFF";
+    // m.last is cleared at the start of a match and of the second half: that drive follows a kickoff
+    if (m.last.kind == K_PLAY && m.last.result == RES_NONE) return m.quarter >= 3 ? "SECOND-HALF KICKOFF" : "OPENING KICKOFF";
     return "KICKOFF";
 }
 
@@ -776,7 +778,7 @@ void drawMatch() {
 // ---------------------------------------------------------------------------
 // Actions
 // ---------------------------------------------------------------------------
-void newFranchise() { pickSel = data.hasSeason ? S().team : 0; screen = SC_PICK; }
+void newFranchise() { pickSel = data.hasSeason ? S().team : 0; pickTapped = false; screen = SC_PICK; }
 
 void startSeason() {
     uint32_t seed = 0x2545F491u ^ ((uint32_t)rtcRead() << 16) ^ (uint32_t)pickSel * 0x9E3779B9u;
@@ -970,7 +972,7 @@ void handleTouch(int dir, int px, int py) {
             if (inRect(x, y, 140, 284, 248, 32)) { startSeason(); break; }
             for (int i = 0; i < NTEAMS; ++i) {
                 const int cx = PK_X + (i % 6) * (PK_W + PK_GAP), cy = PK_Y + (i / 6) * (PK_H + PK_GAP);
-                if (inRect(x, y, cx, cy, PK_W, PK_H)) { if (pickSel == i) startSeason(); else pickSel = i; break; }
+                if (inRect(x, y, cx, cy, PK_W, PK_H)) { if (pickSel == i && pickTapped) startSeason(); else { pickSel = i; pickTapped = true; } break; }
             }
             break;
         case SC_HUB:
@@ -997,7 +999,8 @@ void handleTouch(int dir, int px, int py) {
     }
 }
 
-// Returns true if at least one event was handled.
+// Returns true if at least one event that can change a static screen (a key press or a touch
+// down) was handled; key releases, drags and timer events only update input state.
 bool pollEvents(bool wait) {
     bool any = false;
     for (int n = 0; n < 32; ++n) {
@@ -1009,7 +1012,7 @@ bool pollEvents(bool wait) {
             if (ev.data.key.direction == KEY_PRESSED) { handleKey(ev.data.key.keyCode); any = true; }
         } else if (ev.type == EVENT_TOUCH) {
             handleTouch(ev.data.touch_single.direction, ev.data.touch_single.p1_x, ev.data.touch_single.p1_y);
-            any = true;
+            if (ev.data.touch_single.direction == TOUCH_DOWN) any = true;
         } else if (ev.type == EVENT_NONE) {
             break;
         } else if (wait && n == 0) {
@@ -1063,7 +1066,8 @@ int main() {
         draw();
         LCD_Refresh();
         msgTimer = 0;
-        pollEvents(true);
+        // sleep until a key press / touch: a key release or a drag must not cost a full redraw
+        while (!pollEvents(true) && !quit) {}
         if (animating() && data.set.timer) rtcLast = rtcRead();   // do not count the idle time
     }
     if (screen == SC_MATCH && ms != MS_FINAL) data.inMatch = 1;

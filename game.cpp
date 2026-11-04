@@ -141,7 +141,10 @@ void seek(Player& p, fx tx, fx ty, int s) {
     if (len < yd(0.08)) { steerVel(p, 0, 0); return; }
     int want = len / 6;                            // arrive in about 6 ticks
     if (want > s) want = s;
-    steerVel(p, (int)((int64_t)dx * want / len), (int)((int64_t)dy * want / len));
+    // |dx|, |dy| <= len and want <= a player's speed (< 2^9): 32-bit products are enough for any
+    // target within 2^21 fx (512 yards); the 64-bit path is only a guard for absurd targets.
+    if (len < (1 << 21) && want < (1 << 10)) steerVel(p, dx * want / len, dy * want / len);
+    else steerVel(p, (int)((int64_t)dx * want / len), (int)((int64_t)dy * want / len));
 }
 
 void integrate(Player& p) {
@@ -158,6 +161,11 @@ void towards(fx ax, fx ay, fx bx, fx by, fx d, fx& ox, fx& oy) {
     const fx dx = bx - ax, dy = by - ay;
     const fx len = dist(dx, dy);
     if (len <= d || len == 0) { ox = bx; oy = by; return; }
+    if (len < (1 << 19) && d < (1 << 12)) {        // the usual case: |dx| * d < 2^31
+        ox = ax + dx * d / len;
+        oy = ay + dy * d / len;
+        return;
+    }
     ox = ax + (fx)((int64_t)dx * d / len);
     oy = ay + (fx)((int64_t)dy * d / len);
 }
@@ -398,6 +406,7 @@ void defender(Play& pl, int i) {
         if (--d.timer <= 0) d.state = PS_NORMAL;
         return;
     }
+    if (d.state == PS_ENGAGED && d.eng < 0) d.state = PS_NORMAL;   // never index p[-1]
     if (d.state == PS_ENGAGED) {
         Player& b = pl.p[d.eng];
         // locked with a blocker: creep towards the ball (pass) or get pushed back (run)
@@ -406,7 +415,7 @@ void defender(Play& pl, int i) {
         const int s = runBlock ? -ydps(0.5) : ydps(0.7);
         const fx dx = goal.x - d.x, dy = goal.y - d.y;
         const fx len = dist(dx, dy);
-        if (len > 0) steerVel(d, (int)((int64_t)dx * s / len), (int)((int64_t)dy * s / len));
+        if (len > 0) steerVel(d, dx * s / len, dy * s / len);        // |s| < 2^5: fits in 32 bits
         b.vx = d.vx; b.vy = d.vy;
         if (--d.timer <= 0) {
             d.state = PS_SHED; d.timer = sec(1.0);
@@ -596,6 +605,10 @@ void throwBall(Play& pl, int target) {
         ax += (fx)((int64_t)(rndRange(pl.rng, 513) - 256) * err >> 8);
         ay += (fx)((int64_t)(rndRange(pl.rng, 513) - 256) * err >> 8);
     }
+    // keep the landing point near the field (a spot outside it is still incomplete): this bounds
+    // the throw length, so the flight maths in step() stays within 32 bits
+    ax = clampi(ax, -yd(10), FIELD_LEN + yd(10));
+    ay = clampi(ay, -yd(10), FIELD_W + yd(10));
     Ball& b = pl.ball;
     b.sx = b.x = qb.x; b.sy = b.y = qb.y; b.z = yd(2);
     b.tx = ax; b.ty = ay;
@@ -706,7 +719,7 @@ void separate(Play& pl, int from, int to) {
             const fx push = (k::SEP_R - d) / 4;
             fx px, py;
             if (d == 0) { px = push; py = 0; }
-            else { px = (fx)((int64_t)dx * push / d); py = (fx)((int64_t)dy * push / d); }
+            else { px = dx * push / d; py = dy * push / d; }          // |dx|, push < 2^12
             a.x -= px; a.y -= py; b.x += px; b.y += py;
         }
     }
@@ -759,8 +772,9 @@ void step(Play& pl, const Input& in) {
     if (pl.phase == PH_AIR) {
         Ball& b = pl.ball;
         ++b.t;
-        b.x = b.sx + (fx)((int64_t)(b.tx - b.sx) * b.t / b.T);
-        b.y = b.sy + (fx)((int64_t)(b.ty - b.sy) * b.t / b.T);
+        // throw length < 2^20 fx (256 yards) and t <= T < 2^11: the products fit in 32 bits
+        b.x = b.sx + (b.tx - b.sx) * b.t / b.T;
+        b.y = b.sy + (b.ty - b.sy) * b.t / b.T;
         // arc: 4 h u (1 - u), h grows with the length of the throw
         const fx h = yd(1.2) + (fx)(b.T * (FX1 / 24));
         const int u = b.t * 256 / b.T;
@@ -804,6 +818,7 @@ void startUserDrive(Match& m, int yardsFromOwnGoal) {
     m.down = 1;
     m.firstDown = m.ballX + 10 * FX1;
     if (m.firstDown > GOAL_OPP) m.firstDown = GOAL_OPP;
+    m.last.firstDown = false;                      // no stale "FIRST DOWN" banner on a new drive
     m.next = NX_CALL;
 }
 
@@ -1035,6 +1050,7 @@ void oppDrive(Match& m) {
 void continueMatch(Match& m) {
     m.quarter = 3;
     m.clock = QUARTER_SECS;
+    m.last = LastPlay();                           // the 2nd-half kickoff card must not repeat the 1st half's last play
     if (m.userSecondHalf) startUserDrive(m, 25);
     else { m.oppStart = 25; m.next = NX_OPP; }
 }
