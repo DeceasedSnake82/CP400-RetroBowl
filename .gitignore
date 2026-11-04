@@ -1,0 +1,6 @@
+*.o
+*.elf
+*.map
+*.sav
+test/out*/
+__pycache__/
